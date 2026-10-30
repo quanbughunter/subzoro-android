@@ -27,7 +27,7 @@ object Models {
 
     fun url(l: Lang) = "https://alphacephei.com/vosk/models/${l.modelId}.zip"
 
-    /** Chạy trên luồng nền. onProgress(đã tải, tổng) tính theo byte; tổng = -1 nếu máy chủ không báo. */
+    /** Chạy trên luồng nền. onProgress(đã tải, tổng) tính theo byte; tổng = -1 nếu máy chủ không báo, -2 khi đang giải nén. */
     fun download(ctx: Context, l: Lang, cancel: AtomicBoolean, onProgress: (Long, Long) -> Unit) {
         val zip = File(ctx.cacheDir, l.modelId + ".zip")
         var attempt = 0
@@ -41,6 +41,7 @@ object Models {
             }
         }
         if (cancel.get()) throw IOException("đã huỷ")
+        onProgress(-2L, -2L)                                   // báo: đang giải nén
         val out = dir(ctx, l)
         out.deleteRecursively()
         unzip(zip, root(ctx), cancel)

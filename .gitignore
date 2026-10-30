@@ -6,3 +6,6 @@ local.properties
 .DS_Store
 captures/
 .kotlin/
+# file APK tải về để cài thử (đã có sẵn trong mục Releases trên GitHub, không đưa vào code)
+*.apk
+app-all-versions/

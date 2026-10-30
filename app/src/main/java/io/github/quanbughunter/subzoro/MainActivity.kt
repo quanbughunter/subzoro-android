@@ -2,6 +2,8 @@ package io.github.quanbughunter.subzoro
 
 import android.Manifest
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -27,6 +29,7 @@ import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -57,14 +60,17 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
-        // chữ/biểu tượng thanh trạng thái màu tối trên nền sáng
-        if (Build.VERSION.SDK_INT >= 30) {
-            window.insetsController?.setSystemBarsAppearance(
-                WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
-                WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
-            )
-        }
         setContentView(build())
+        // chữ/biểu tượng thanh trạng thái màu tối trên nền sáng.
+        // Phải gọi SAU setContentView: trước đó cửa sổ chưa có khung (bản 0.1.1 văng ngay khi mở vì gọi sớm).
+        if (Build.VERSION.SDK_INT >= 30) {
+            try {
+                window.decorView.windowInsetsController?.setSystemBarsAppearance(
+                    WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
+                    WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+                )
+            } catch (e: Exception) { }
+        }
     }
 
     override fun onResume() {
@@ -135,6 +141,37 @@ class MainActivity : Activity() {
         root.addView(text("subZoro", 28f, Pal.ACCENT, true))
         root.addView(text("Phụ đề nổi trên YouTube — bản thử $version", 14f, Pal.MUTED))
         root.gap(16)
+
+        // Lần trước app bị văng: hiện lỗi để chụp gửi
+        val crash = File(filesDir, App.CRASH_FILE)
+        if (crash.exists()) {
+            val log = try { crash.readText() } catch (e: Exception) { "" }
+            val box = card("SUBZORO BỊ LỖI LẦN TRƯỚC")
+            box.gap(6)
+            box.addView(text("Chụp màn hình phần dưới (hoặc bấm Sao chép rồi dán) gửi để sửa.", 13f, Pal.MUTED))
+            box.gap(6)
+            box.addView(TextView(this).apply {
+                text = if (log.length > 3500) log.substring(0, 3500) + "\n…" else log
+                textSize = 11f
+                typeface = Typeface.MONOSPACE
+                setTextColor(Pal.DANGER)
+                setTextIsSelectable(true)
+            })
+            box.gap(8)
+            val acts = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            acts.addView(button("Sao chép lỗi", false) {
+                getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("subZoro lỗi", log))
+                Toast.makeText(this, "Đã sao chép", Toast.LENGTH_SHORT).show()
+            })
+            acts.addView(View(this), LinearLayout.LayoutParams(dp(8), 1))
+            acts.addView(button("Xoá", false) {
+                crash.delete()
+                root.removeView(box)
+            })
+            box.addView(acts)
+            root.addView(box)
+            root.gap(12)
+        }
 
         // 1. Quyền
         val perms = card("1 · QUYỀN CẦN CẤP")
@@ -410,7 +447,10 @@ class MainActivity : Activity() {
             try {
                 Models.download(this, l, cancel) { done, total ->
                     ui.post {
-                        if (total > 0) {
+                        if (total == -2L) {
+                            modelBar.isIndeterminate = true
+                            modelInfo.text = "Đang giải nén mô hình… (vài chục giây)"
+                        } else if (total > 0) {
                             modelBar.isIndeterminate = false
                             modelBar.progress = (done * 1000 / total).toInt()
                             modelInfo.text = String.format("Đang tải %.1f / %.1f MB…", done / 1e6, total / 1e6)
