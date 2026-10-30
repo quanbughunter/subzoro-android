@@ -9,3 +9,5 @@ captures/
 # file APK tải về để cài thử (đã có sẵn trong mục Releases trên GitHub, không đưa vào code)
 *.apk
 app-all-versions/
+# thư viện tải tự động khi dựng
+app/libs/

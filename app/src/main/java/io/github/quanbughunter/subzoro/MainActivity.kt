@@ -30,11 +30,10 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import java.io.File
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Màn hình cài đặt: cấp quyền, chọn ngôn ngữ + tải mô hình, chọn nguồn tiếng, bật/tắt bong bóng.
- * Giao diện dựng bằng mã (không dùng thư viện ngoài) cho gọn.
+ * Màn hình cài đặt: cấp quyền, tải mô hình nghe, chọn nguồn tiếng, bật/tắt bong bóng.
+ * Giao diện dựng bằng mã cho gọn.
  */
 class MainActivity : Activity() {
     companion object {
@@ -46,16 +45,13 @@ class MainActivity : Activity() {
     private lateinit var prefs: Prefs
     private val ui = Handler(Looper.getMainLooper())
     private val rows = ArrayList<PermRow>()
+    private val packRows = ArrayList<PackRow>()
 
-    private lateinit var modelInfo: TextView
-    private lateinit var modelBtn: TextView
-    private lateinit var modelBar: ProgressBar
     private lateinit var srcNote: TextView
     private lateinit var startBtn: TextView
     private lateinit var startNote: TextView
 
-    private var dlCancel: AtomicBoolean? = null
-    private var dlLang: String? = null
+    private val onDownloads: () -> Unit = { for (r in packRows) r.refresh(); refreshStart() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -75,12 +71,14 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        Downloads.addListener(onDownloads)
         refresh()
         ui.postDelayed(poll, 1000)
     }
 
     override fun onPause() {
         super.onPause()
+        Downloads.removeListener(onDownloads)
         ui.removeCallbacks(poll)
     }
 
@@ -131,6 +129,14 @@ class MainActivity : Activity() {
     }
 
     private fun LinearLayout.gap(h: Int) = addView(View(this@MainActivity), LinearLayout.LayoutParams(1, dp(h)))
+
+    private fun check(label: String, on: Boolean, onChange: (Boolean) -> Unit) = CheckBox(this).apply {
+        text = label
+        textSize = 15f
+        setTextColor(Pal.TEXT)
+        isChecked = on
+        setOnCheckedChangeListener { _, v -> onChange(v) }
+    }
 
     private fun build(): View {
         val root = LinearLayout(this).apply {
@@ -185,7 +191,7 @@ class MainActivity : Activity() {
             { checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED },
             { requestPerms() })
         rows += PermRow("Truy cập thông báo (nên có)",
-            "Để biết video đang chạy tới giây nào: chạm vào câu là tua lại đúng câu đó. Nếu mục subZoro bị mờ: mở Thông tin ứng dụng → ⋮ → Cho phép cài đặt bị hạn chế, rồi bật lại.",
+            "Để biết video đang chạy tới giây nào (chạm câu là tua lại) và đọc tên video để tự đoán ngôn ngữ. Nếu mục subZoro bị mờ: mở Thông tin ứng dụng → ⋮ → Cho phép cài đặt bị hạn chế, rồi bật lại.",
             { VideoClock.hasAccess(this) },
             { openListenerSettings() },
             extra = "Thông tin ứng dụng" to { open(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))) })
@@ -199,62 +205,70 @@ class MainActivity : Activity() {
         root.gap(12)
 
         // 2. Ngôn ngữ + mô hình
-        val langCard = card("2 · NGÔN NGỮ NÓI TRONG VIDEO")
-        val group = RadioGroup(this)
+        val models = card("2 · NGÔN NGỮ VÀ MÔ HÌNH NGHE")
+        models.gap(4)
+        models.addView(text("Đổi ngôn ngữ ngay trên bong bóng bằng nút EN / RU / 中文. Mỗi thứ tiếng cần tải mô hình của nó một lần.", 13f, Pal.MUTED))
+        models.addView(check("Tự đoán ngôn ngữ theo tên video", prefs.autoLang) { prefs.autoLang = it })
+        models.gap(4)
+        models.addView(text("Ngôn ngữ khi không đoán được:", 13.5f, Pal.TEXT))
+        val group = RadioGroup(this).apply { orientation = LinearLayout.HORIZONTAL }
         for (l in Langs.ALL) {
             group.addView(RadioButton(this).apply {
                 id = View.generateViewId()
                 text = l.name
-                textSize = 15f
+                textSize = 14f
                 setTextColor(Pal.TEXT)
                 isChecked = l.code == prefs.lang
-                setOnCheckedChangeListener { _, on -> if (on) { prefs.lang = l.code; refreshModel() } }
+                setOnCheckedChangeListener { _, on -> if (on) { prefs.lang = l.code; refreshStart() } }
             })
         }
-        langCard.addView(group)
-        langCard.gap(6)
-        modelInfo = text("", 13.5f, Pal.MUTED)
-        langCard.addView(modelInfo)
-        modelBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000; visibility = View.GONE }
-        langCard.addView(modelBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(10)).apply { topMargin = dp(6) })
-        langCard.gap(8)
-        modelBtn = button("Tải mô hình", false) { onModelButton() }
-        langCard.addView(modelBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        root.addView(langCard)
+        models.addView(group)
+        models.gap(10)
+        models.addView(text("Nghe nhanh — chữ hiện ngay theo từng từ (Vosk)", 14f, Pal.TEXT, true))
+        for (code in listOf("en", "ru", "zh")) {
+            val r = PackRow(Packs.vosk(code))
+            packRows += r
+            models.gap(6)
+            models.addView(r.view)
+        }
+        models.gap(12)
+        models.addView(text("Nghe chính xác (tuỳ chọn) — mỗi câu được nghe lại và sửa sau ~1 giây, có dấu câu", 14f, Pal.TEXT, true))
+        models.addView(text("SenseVoice dùng chung cho tiếng Trung và tiếng Anh; GigaAM v2 cho tiếng Nga. Nên tải bằng Wi-Fi.", 13f, Pal.MUTED))
+        for (p in listOf(Packs.SENSEVOICE, Packs.GIGAAM)) {
+            val r = PackRow(p)
+            packRows += r
+            models.gap(6)
+            models.addView(r.view)
+        }
+        models.addView(check("Dùng mô hình chính xác khi đã tải", prefs.accurate) { prefs.accurate = it })
+        root.addView(models)
         root.gap(12)
 
         // 3. Nguồn tiếng + dịch
-        val srcCard = card("3 · NGHE TỪ ĐÂU")
+        val srcCard = card("3 · NGHE TỪ ĐÂU, DỊCH")
         val sg = RadioGroup(this)
-        val app = RadioButton(this).apply {
+        sg.addView(RadioButton(this).apply {
             id = View.generateViewId()
             text = "Tiếng phát ra từ YouTube (rõ nhất)"
             textSize = 15f
             setTextColor(Pal.TEXT)
             isChecked = prefs.source == "app"
             setOnCheckedChangeListener { _, on -> if (on) prefs.source = "app" }
-        }
-        val mic = RadioButton(this).apply {
+        })
+        sg.addView(RadioButton(this).apply {
             id = View.generateViewId()
             text = "Micro (khi YouTube chặn bắt tiếng)"
             textSize = 15f
             setTextColor(Pal.TEXT)
             isChecked = prefs.source == "mic"
             setOnCheckedChangeListener { _, on -> if (on) prefs.source = "mic" }
-        }
-        sg.addView(app)
-        sg.addView(mic)
+        })
         srcCard.addView(sg)
         srcNote = text("", 13f, Pal.MUTED)
         srcCard.addView(srcNote)
         srcCard.gap(8)
-        srcCard.addView(CheckBox(this).apply {
-            text = "Dịch sang tiếng Việt (cần mạng)"
-            textSize = 15f
-            setTextColor(Pal.TEXT)
-            isChecked = prefs.translate
-            setOnCheckedChangeListener { _, on -> prefs.translate = on }
-        })
+        srcCard.addView(check("Dịch sang tiếng Việt", prefs.translate) { prefs.translate = it })
+        srcCard.addView(text("Dịch ngay trên máy bằng bộ dịch của Google (tự tải gói ~30 MB mỗi thứ tiếng lần đầu, sau đó không cần mạng). Không được thì dùng Google Dịch qua mạng.", 13f, Pal.MUTED))
         root.addView(srcCard)
         root.gap(16)
 
@@ -270,10 +284,10 @@ class MainActivity : Activity() {
         tips.gap(6)
         tips.addView(text(
             "• Khi Android hỏi chia sẻ/ghi màn hình, bấm Bắt đầu: subZoro chỉ lấy tiếng, không ghi hình, không gửi tiếng đi đâu.\n" +
-                "• Trên bong bóng: chạm vào câu để tua lại câu đó, ↺ nghe lại câu vừa rồi, Aa đổi cỡ chữ, — thu nhỏ thành nút tròn, ✕ tắt. Kéo dòng trạng thái để dời bong bóng lên/xuống.\n" +
+                "• Trên bong bóng: nút ngôn ngữ (EN/RU/中文) để đổi thứ tiếng; chạm vào câu để tua lại câu đó, ↺ nghe lại câu vừa rồi, Aa đổi cỡ chữ, — thu nhỏ thành nút tròn, ✕ tắt. Kéo dòng trạng thái để dời bong bóng lên/xuống.\n" +
+                "• Tiếng Trung: dòng trên là bính âm, dòng dưới là nghĩa tiếng Việt.\n" +
                 "• Samsung: Cài đặt → Chăm sóc thiết bị/Pin → Giới hạn sử dụng nền → Ứng dụng không bao giờ ngủ → thêm subZoro.\n" +
-                "• Xiaomi/Redmi: Cài đặt → Ứng dụng → subZoro → Tiết kiệm pin → Không giới hạn.\n" +
-                "• Bản thử dùng mô hình Vosk nhỏ (nhận dạng ngay trên máy). Chữ có thể sai vài chỗ, nhất là khi có nhạc nền.",
+                "• Xiaomi/Redmi: Cài đặt → Ứng dụng → subZoro → Tiết kiệm pin → Không giới hạn.",
             13.5f, Pal.TEXT))
         root.addView(tips)
 
@@ -328,8 +342,6 @@ class MainActivity : Activity() {
             view.addView(btn)
         }
 
-        fun ok(): Boolean = granted?.invoke() ?: true
-
         fun refresh() {
             val g = granted ?: return
             val ok = g()
@@ -338,11 +350,75 @@ class MainActivity : Activity() {
         }
     }
 
+    /** Một gói mô hình: tên + dung lượng + trạng thái, nút Tải / Huỷ / Xoá, thanh tiến độ. */
+    private inner class PackRow(private val p: Pack) {
+        val view = LinearLayout(this@MainActivity)
+        private val info: TextView
+        private val bar = ProgressBar(this@MainActivity, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000 }
+        private val btn: TextView
+
+        init {
+            view.orientation = LinearLayout.VERTICAL
+            val row = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val texts = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+            texts.addView(text(p.name + "  ·  ~${p.mb} MB", 14.5f, Pal.TEXT))
+            info = text("", 12.5f, Pal.MUTED)
+            texts.addView(info)
+            row.addView(texts, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(10) })
+            btn = button("Tải", false) { onButton() }
+            row.addView(btn)
+            view.addView(row)
+            view.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(8)).apply { topMargin = dp(4) })
+            refresh()
+        }
+
+        private fun onButton() {
+            when {
+                Downloads.running(p) -> Downloads.cancel(p)
+                Packs.ready(this@MainActivity, p) -> {
+                    Packs.delete(this@MainActivity, p)
+                    refresh()
+                    refreshStart()
+                }
+                else -> Downloads.start(this@MainActivity, p)
+            }
+        }
+
+        fun refresh() {
+            val running = Downloads.running(p)
+            val s = Downloads.state(p)
+            when {
+                running -> {
+                    btn.text = "Huỷ"
+                    bar.visibility = View.VISIBLE
+                    if (s != null && s.total > 0) {
+                        bar.isIndeterminate = false
+                        bar.progress = (s.done * 1000 / s.total).toInt()
+                    } else bar.isIndeterminate = true
+                    info.text = Downloads.describe(p) ?: "Đang tải…"
+                }
+                Packs.ready(this@MainActivity, p) -> {
+                    btn.text = "Xoá"
+                    bar.visibility = View.GONE
+                    info.text = "✓ Đã có trên máy"
+                }
+                else -> {
+                    btn.text = "Tải"
+                    bar.visibility = View.GONE
+                    info.text = s?.error?.let { if (it == "đã huỷ") "Đã huỷ tải — bấm Tải để tải tiếp phần còn lại." else "Tải không được: $it. Kiểm tra mạng (có thể cần VPN) rồi bấm Tải lại — phần đã tải được giữ lại." } ?: "Chưa tải"
+                }
+            }
+        }
+    }
+
     /* ---------------------------------------------------------------- cập nhật */
 
     private fun refresh() {
         for (r in rows) r.refresh()
-        refreshModel()
+        for (r in packRows) r.refresh()
         srcNote.text = when (prefs.appCapture) {
             "ok" -> "✓ Máy này bắt được tiếng YouTube."
             "silent" -> "Lần trước không nghe được tiếng YouTube trên máy này — nếu vẫn vậy, chọn Micro."
@@ -351,43 +427,21 @@ class MainActivity : Activity() {
         refreshStart()
     }
 
-    private fun refreshModel() {
-        if (!::modelBtn.isInitialized) return
-        val l = Langs.of(prefs.lang)
-        val downloading = dlCancel != null
-        when {
-            downloading && dlLang == l.code -> {
-                modelBtn.text = "Huỷ tải"
-                modelBar.visibility = View.VISIBLE
-            }
-            Models.ready(this, l) -> {
-                modelInfo.text = "✓ Đã có mô hình ${l.name} (~${l.mb} MB) trên máy."
-                modelBtn.text = "Xoá mô hình"
-                modelBar.visibility = View.GONE
-            }
-            else -> {
-                modelInfo.text = "Cần tải mô hình ${l.name} một lần (~${l.mb} MB, từ alphacephei.com)."
-                modelBtn.text = "Tải mô hình"
-                modelBar.visibility = View.GONE
-            }
-        }
-        styleButton(modelBtn, false, !downloading || dlLang == l.code)
-        refreshStart()
-    }
+    private fun anyVosk() = Langs.ALL.any { Packs.ready(this, Packs.vosk(it.code)) }
 
     private fun refreshStart() {
         if (!::startBtn.isInitialized) return
         val running = CaptionService.running
         val needOverlay = !Settings.canDrawOverlays(this)
         val needMic = checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
-        val needModel = !Models.ready(this, Langs.of(prefs.lang))
+        val needModel = !anyVosk()
         startBtn.text = if (running) "Tắt bong bóng" else "Bật bong bóng phụ đề"
         val can = running || (!needOverlay && !needMic && !needModel)
         styleButton(startBtn, true, can)
         startNote.text = when {
             running -> "Bong bóng đang chạy. Mở YouTube để xem phụ đề."
             needOverlay || needMic -> "Cấp quyền hiển thị trên ứng dụng khác và micro trước."
-            needModel -> "Tải mô hình ngôn ngữ trước."
+            needModel -> "Tải ít nhất một mô hình “Nghe nhanh” ở mục 2."
             else -> "Bấm xong, subZoro sẽ mở YouTube cho bạn."
         }
     }
@@ -425,54 +479,6 @@ class MainActivity : Activity() {
             .setClassName("com.miui.securitycenter", "com.miui.permcenter.permissions.PermissionsEditorActivity")
             .putExtra("extra_pkgname", packageName)
         open(i)
-    }
-
-    private fun onModelButton() {
-        val l = Langs.of(prefs.lang)
-        val running = dlCancel
-        if (running != null) { running.set(true); return }
-        if (Models.ready(this, l)) {
-            Models.delete(this, l)
-            refreshModel()
-            return
-        }
-        val cancel = AtomicBoolean(false)
-        dlCancel = cancel
-        dlLang = l.code
-        modelInfo.text = "Đang tải mô hình ${l.name}…"
-        modelBar.progress = 0
-        refreshModel()
-        Thread {
-            var err: String? = null
-            try {
-                Models.download(this, l, cancel) { done, total ->
-                    ui.post {
-                        if (total == -2L) {
-                            modelBar.isIndeterminate = true
-                            modelInfo.text = "Đang giải nén mô hình… (vài chục giây)"
-                        } else if (total > 0) {
-                            modelBar.isIndeterminate = false
-                            modelBar.progress = (done * 1000 / total).toInt()
-                            modelInfo.text = String.format("Đang tải %.1f / %.1f MB…", done / 1e6, total / 1e6)
-                        } else {
-                            modelBar.isIndeterminate = true
-                            modelInfo.text = String.format("Đang tải %.1f MB…", done / 1e6)
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                err = if (cancel.get()) "Đã huỷ tải." else "Tải không được: ${e.message}. Kiểm tra mạng (có thể cần VPN) rồi thử lại — phần đã tải được giữ lại."
-            }
-            ui.post {
-                dlCancel = null
-                dlLang = null
-                refreshModel()
-                if (err != null) {
-                    modelInfo.text = err
-                    if (!cancel.get()) Toast.makeText(this, "Tải mô hình thất bại", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }.start()
     }
 
     private fun onStartButton() {

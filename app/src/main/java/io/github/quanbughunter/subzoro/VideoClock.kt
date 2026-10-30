@@ -85,8 +85,8 @@ class VideoClock(private val ctx: Context, private val onChange: () -> Unit) {
             controller?.unregisterCallback(cb)
             controller = best
             best?.registerCallback(cb, handler)
+            onChange()       // chỉ báo khi đổi phiên (báo mỗi lần sẽ thành vòng lặp với refreshStatus)
         }
-        onChange()
     }
 
     val connected: Boolean get() = controller != null

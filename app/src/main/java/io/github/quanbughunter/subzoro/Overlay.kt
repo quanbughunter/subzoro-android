@@ -11,6 +11,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
 import kotlin.math.abs
@@ -22,14 +23,15 @@ interface OverlayHost {
     fun onTogglePlay()
     fun onSeekLine(line: Line)
     fun onClose()
-    fun onWarnAction()
+    /** code = "auto" hoặc mã ngôn ngữ (en/ru/zh) */
+    fun onPickLang(code: String)
 }
 
 /**
  * Bong bóng phụ đề nổi trên YouTube (quyền "Hiển thị trên ứng dụng khác").
- *   - Mở: dải phụ đề 3 câu gần nhất + câu đang nghe dở, kèm bản dịch. Kéo thanh trên để dời lên/xuống.
+ *   - Mở: nút ngôn ngữ + trạng thái + nút điều khiển; 3 câu gần nhất (tiếng Trung có bính âm phía trên)
+ *     và nghĩa tiếng Việt nhỏ ngay bên dưới; câu đang nghe dở in nghiêng.
  *   - Thu nhỏ: nút tròn ba nhát chém, kéo đi đâu cũng được, chạm để mở lại.
- * Cửa sổ không giành bàn phím/cảm ứng của YouTube ngoài phần nó chiếm chỗ.
  */
 @SuppressLint("ClickableViewAccessibility", "SetTextI18n", "ViewConstructor")
 class Overlay(private val ctx: Context, private val host: OverlayHost) {
@@ -39,8 +41,12 @@ class Overlay(private val ctx: Context, private val host: OverlayHost) {
     private val panel = LinearLayout(ctx)
     private val header = LinearLayout(ctx)
     private val dot = View(ctx)
+    private val langBtn = TextView(ctx)
     private val status = TextView(ctx)
     private val playBtn = TextView(ctx)
+    private val langRow = LinearLayout(ctx)
+    private val langScroll = HorizontalScrollView(ctx)
+    private val infoView = TextView(ctx)
     private val warnBox = LinearLayout(ctx)
     private val warnText = TextView(ctx)
     private val warnBtn = TextView(ctx)
@@ -53,9 +59,12 @@ class Overlay(private val ctx: Context, private val host: OverlayHost) {
     private var panelShown = false
     private var bubbleShown = false
     private var dotState = -1
+    private var warnAction: (() -> Unit)? = null
 
     private var lines: List<Line> = emptyList()
     private var partialText = ""
+    private var curLang = "en"
+    private var autoLang = true
 
     init {
         buildPanel()
@@ -78,21 +87,40 @@ class Overlay(private val ctx: Context, private val host: OverlayHost) {
         setTextColor(Pal.ACCENT)
         typeface = Typeface.DEFAULT_BOLD
         gravity = Gravity.CENTER
-        minWidth = ctx.dp(36)
-        setPadding(ctx.dp(6), ctx.dp(2), ctx.dp(6), ctx.dp(2))
+        minWidth = ctx.dp(34)
+        setPadding(ctx.dp(5), ctx.dp(2), ctx.dp(5), ctx.dp(2))
+        setOnClickListener { onClick() }
+    }
+
+    private fun chip(label: String, on: Boolean, onClick: () -> Unit) = TextView(ctx).apply {
+        text = label
+        textSize = 13.5f
+        typeface = if (on) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+        setTextColor(if (on) Pal.ACCENT else Pal.TEXT)
+        background = rounded(if (on) Pal.ACCENT_SOFT else Pal.SURFACE, ctx.dp(99).toFloat(), if (on) Pal.ACCENT else Pal.LINE, ctx.dp(1))
+        setPadding(ctx.dp(11), ctx.dp(4), ctx.dp(11), ctx.dp(4))
         setOnClickListener { onClick() }
     }
 
     private fun buildPanel() {
         panel.orientation = LinearLayout.VERTICAL
         panel.background = rounded(Pal.PANEL, ctx.dp(16).toFloat(), Pal.LINE, ctx.dp(1))
-        panel.setPadding(ctx.dp(12), ctx.dp(6), ctx.dp(10), ctx.dp(10))
+        panel.setPadding(ctx.dp(12), ctx.dp(6), ctx.dp(8), ctx.dp(10))
 
         header.orientation = LinearLayout.HORIZONTAL
         header.gravity = Gravity.CENTER_VERTICAL
         dot.background = oval(Pal.LINE)
-        header.addView(dot, LinearLayout.LayoutParams(ctx.dp(10), ctx.dp(10)).apply { rightMargin = ctx.dp(8) })
-        status.textSize = 12.5f
+        header.addView(dot, LinearLayout.LayoutParams(ctx.dp(9), ctx.dp(9)).apply { rightMargin = ctx.dp(7) })
+        langBtn.apply {
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Pal.ACCENT)
+            background = rounded(Pal.ACCENT_SOFT, ctx.dp(99).toFloat(), Pal.ACCENT, ctx.dp(1))
+            setPadding(ctx.dp(9), ctx.dp(2), ctx.dp(7), ctx.dp(2))
+            setOnClickListener { toggleLangRow() }
+        }
+        header.addView(langBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { rightMargin = ctx.dp(7) })
+        status.textSize = 12f
         status.setTextColor(Pal.MUTED)
         status.isSingleLine = true
         status.ellipsize = TextUtils.TruncateAt.END
@@ -100,12 +128,12 @@ class Overlay(private val ctx: Context, private val host: OverlayHost) {
         header.addView(iconButton("↺") { host.onReplay() })
         playBtn.apply {
             text = "❚❚"
-            textSize = 15f
+            textSize = 14f
             setTextColor(Pal.ACCENT)
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
-            minWidth = ctx.dp(36)
-            setPadding(ctx.dp(6), ctx.dp(2), ctx.dp(6), ctx.dp(2))
+            minWidth = ctx.dp(34)
+            setPadding(ctx.dp(5), ctx.dp(2), ctx.dp(5), ctx.dp(2))
             setOnClickListener { host.onTogglePlay() }
         }
         header.addView(playBtn)
@@ -115,6 +143,19 @@ class Overlay(private val ctx: Context, private val host: OverlayHost) {
         header.setOnTouchListener(DragTouch(panel, panelLp, horizontal = false, onTap = null))
         status.setOnTouchListener(DragTouch(panel, panelLp, horizontal = false, onTap = null))
         panel.addView(header)
+
+        // hàng chọn ngôn ngữ (ẩn, bấm nút ngôn ngữ để mở)
+        langRow.orientation = LinearLayout.HORIZONTAL
+        langRow.setPadding(0, ctx.dp(6), 0, ctx.dp(2))
+        langScroll.isHorizontalScrollBarEnabled = false
+        langScroll.addView(langRow)
+        langScroll.visibility = View.GONE
+        panel.addView(langScroll)
+
+        infoView.textSize = 12f
+        infoView.setTextColor(Pal.MUTED)
+        infoView.visibility = View.GONE
+        panel.addView(infoView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = ctx.dp(3) })
 
         warnBox.orientation = LinearLayout.HORIZONTAL
         warnBox.gravity = Gravity.CENTER_VERTICAL
@@ -127,7 +168,7 @@ class Overlay(private val ctx: Context, private val host: OverlayHost) {
         warnBtn.setTextColor(Pal.ACCENT)
         warnBtn.typeface = Typeface.DEFAULT_BOLD
         warnBtn.setPadding(ctx.dp(10), ctx.dp(4), ctx.dp(4), ctx.dp(4))
-        warnBtn.setOnClickListener { host.onWarnAction() }
+        warnBtn.setOnClickListener { warnAction?.invoke() }
         warnBox.addView(warnBtn)
         warnBox.visibility = View.GONE
         panel.addView(warnBox, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = ctx.dp(4) })
@@ -138,7 +179,28 @@ class Overlay(private val ctx: Context, private val host: OverlayHost) {
         partialView.setTextColor(Pal.MUTED)
         partialView.setTypeface(null, Typeface.ITALIC)
         panel.addView(partialView)
+        renderLang()
         renderLines()
+    }
+
+    private fun toggleLangRow() {
+        langScroll.visibility = if (langScroll.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        renderLang()
+    }
+
+    private fun renderLang() {
+        val l = Langs.of(curLang)
+        langBtn.text = (if (autoLang) "Tự: " else "") + l.short + " ▾"
+        langRow.removeAllViews()
+        val pick = { code: String ->
+            langScroll.visibility = View.GONE
+            host.onPickLang(code)
+        }
+        langRow.addView(chip("Tự động theo tên video", autoLang) { pick("auto") })
+        for (x in Langs.ALL) {
+            langRow.addView(View(ctx), LinearLayout.LayoutParams(ctx.dp(6), 1))
+            langRow.addView(chip(x.name, !autoLang && x.code == curLang) { pick(x.code) })
+        }
     }
 
     /* ---------------------------------------------------------------- hiện / ẩn */
@@ -206,8 +268,22 @@ class Overlay(private val ctx: Context, private val host: OverlayHost) {
 
     /* ---------------------------------------------------------------- cập nhật */
 
+    fun setLang(code: String, auto: Boolean) {
+        if (code == curLang && auto == autoLang) return
+        curLang = code
+        autoLang = auto
+        renderLang()
+    }
+
     fun setStatus(text: String) {
         if (status.text.toString() != text) status.text = text
+    }
+
+    /** Dòng thông tin nhỏ (đang tải mô hình/gói dịch, lỗi dịch…); null để ẩn. */
+    fun setInfo(text: String?) {
+        if (text.isNullOrEmpty()) { infoView.visibility = View.GONE; return }
+        if (infoView.text.toString() != text) infoView.text = text
+        infoView.visibility = View.VISIBLE
     }
 
     fun setPlaying(playing: Boolean) {
@@ -229,11 +305,12 @@ class Overlay(private val ctx: Context, private val host: OverlayHost) {
         )
     }
 
-    fun setWarning(text: String?, action: String?) {
-        if (text == null) { warnBox.visibility = View.GONE; return }
+    fun setWarning(text: String?, action: String? = null, onAction: (() -> Unit)? = null) {
+        if (text == null) { warnBox.visibility = View.GONE; warnAction = null; return }
         warnText.text = text
         warnBtn.text = action ?: ""
         warnBtn.visibility = if (action == null) View.GONE else View.VISIBLE
+        warnAction = onAction
         warnBox.visibility = View.VISIBLE
     }
 
@@ -256,16 +333,22 @@ class Overlay(private val ctx: Context, private val host: OverlayHost) {
             val box = LinearLayout(ctx)
             box.orientation = LinearLayout.VERTICAL
             box.setPadding(0, ctx.dp(4), 0, ctx.dp(4))
-            box.alpha = if (i == lines.size - 1) 1f else 0.62f
+            box.alpha = if (i == lines.size - 1) 1f else 0.6f
+            val py = l.pinyin
+            if (!py.isNullOrEmpty()) box.addView(TextView(ctx).apply {
+                text = py
+                textSize = size - 4f
+                setTextColor(Pal.PINYIN)
+            })
             box.addView(TextView(ctx).apply {
                 text = l.text
                 textSize = size
                 setTextColor(Pal.TEXT)
             })
             val vi = l.vi
-            if (vi != null) box.addView(TextView(ctx).apply {
+            if (!vi.isNullOrEmpty()) box.addView(TextView(ctx).apply {
                 text = vi
-                textSize = size - 3f
+                textSize = size - 4f
                 setTextColor(Pal.MUTED)
             })
             if (l.startMs >= 0) box.setOnClickListener { host.onSeekLine(l) }

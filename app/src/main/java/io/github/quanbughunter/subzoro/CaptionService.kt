@@ -33,10 +33,12 @@ import kotlin.math.sqrt
 
 /**
  * Dịch vụ chạy nền khi bong bóng đang mở:
- *   - nghe tiếng YouTube (AudioPlaybackCapture, cần người dùng đồng ý "chia sẻ màn hình") hoặc nghe qua micro,
- *   - đưa tiếng cho Vosk nhận dạng ngay trên máy, chữ hiện dần theo từng từ,
- *   - gắn mỗi câu với thời điểm trong video (đọc phiên phát của YouTube) để chạm vào câu là tua lại đúng chỗ,
- *   - dịch câu sang tiếng Việt nếu bật.
+ *   - nghe tiếng YouTube (AudioPlaybackCapture, cần đồng ý "chia sẻ màn hình") hoặc nghe qua micro,
+ *   - Vosk nhận dạng ngay, chữ hiện dần theo từng từ;
+ *   - xong mỗi câu: nghe lại đoạn đó bằng mô hình chính xác (SenseVoice/GigaAM) nếu đã tải, thêm bính âm (tiếng Trung),
+ *     dịch sang tiếng Việt;
+ *   - gắn câu với thời điểm trong video (đọc phiên phát của YouTube) để chạm vào câu là tua lại;
+ *   - đổi ngôn ngữ ngay trên bong bóng, hoặc tự đoán theo tên video.
  */
 class CaptionService : Service(), OverlayHost {
     companion object {
@@ -64,6 +66,7 @@ class CaptionService : Service(), OverlayHost {
     private val ui = Handler(Looper.getMainLooper())
     private lateinit var prefs: Prefs
     private lateinit var lang: Lang
+    private var autoLang = true
     private var overlay: Overlay? = null
     private var clock: VideoClock? = null
     private var clockOk = false
@@ -71,14 +74,20 @@ class CaptionService : Service(), OverlayHost {
     private var engine: Engine? = null
     private var source = Source.MIC
     private var destroying = false
+    private var lastTitle: String? = null
 
     private val lines = ArrayList<Line>()
     private var partialText = ""
+    /** nghe lại câu bằng mô hình chính xác + bính âm (lần lượt từng câu) */
+    private val work: ExecutorService = Executors.newSingleThreadExecutor()
+    /** dịch (có thể phải chờ tải gói dịch) */
     private val tr: ExecutorService = Executors.newSingleThreadExecutor()
+    @Volatile private var refiner: Refiner? = null
+    @Volatile private var refinerLoading: String? = null
 
     @Volatile private var lastLoudAt = 0L
     @Volatile private var listenSince = 0L
-    @Volatile private var engineState = "loading"   // loading | listening | error
+    @Volatile private var engineState = "loading"   // loading | listening | error | nomodel
     private var warned = false
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -86,6 +95,7 @@ class CaptionService : Service(), OverlayHost {
     override fun onCreate() {
         super.onCreate()
         prefs = Prefs(this)
+        autoLang = prefs.autoLang
         lang = Langs.of(prefs.lang)
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Bong bóng phụ đề", NotificationManager.IMPORTANCE_LOW))
@@ -126,10 +136,20 @@ class CaptionService : Service(), OverlayHost {
             }
         }
         source = if (projection != null) Source.APP else Source.MIC
-        overlay = Overlay(this, this).also { it.show() }
         clock = VideoClock(this) { ui.post { refreshStatus() } }
         clockOk = clock?.start() == true
-        startEngine(source)
+        // tự đoán ngôn ngữ theo video đang mở (nếu đã có mô hình)
+        if (autoLang) {
+            lastTitle = clock?.title
+            val g = Langs.guess(lastTitle)
+            if (g != null && Packs.ready(this, Packs.vosk(g))) lang = Langs.of(g)
+        }
+        overlay = Overlay(this, this).also {
+            it.setLang(lang.code, autoLang)
+            it.show()
+        }
+        Downloads.addListener(onDownloads)
+        startEngineIfReady()
         ui.post(ticker)
         return START_NOT_STICKY
     }
@@ -138,6 +158,7 @@ class CaptionService : Service(), OverlayHost {
         destroying = true
         running = false
         ui.removeCallbacks(ticker)
+        Downloads.removeListener(onDownloads)
         val e = engine
         engine = null
         if (e != null) Thread { e.halt() }.start()
@@ -147,7 +168,13 @@ class CaptionService : Service(), OverlayHost {
         clock = null
         try { projection?.stop() } catch (ex: Exception) { }
         projection = null
+        work.execute {
+            refiner?.release()
+            refiner = null
+        }
+        work.shutdown()
         tr.shutdownNow()
+        Translator.close()
         super.onDestroy()
     }
 
@@ -166,32 +193,144 @@ class CaptionService : Service(), OverlayHost {
         }
     }
 
+    /* ---------------------------------------------------------------- ngôn ngữ + mô hình */
+
+    override fun onPickLang(code: String) {
+        if (code == "auto") {
+            autoLang = true
+            prefs.autoLang = true
+            val g = Langs.guess(clock?.title)
+            switchLang(g ?: lang.code)
+        } else {
+            autoLang = false
+            prefs.autoLang = false
+            prefs.lang = code
+            switchLang(code)
+        }
+        overlay?.setLang(lang.code, autoLang)
+    }
+
+    private fun switchLang(code: String) {
+        if (code == lang.code && engine != null) return
+        lang = Langs.of(code)
+        overlay?.setLang(lang.code, autoLang)
+        val old = engine
+        engine = null
+        engineState = "loading"
+        setPartial("")
+        Thread {
+            old?.halt()
+            ui.post { if (running) startEngineIfReady() }
+        }.start()
+    }
+
+    private fun startEngineIfReady() {
+        if (engine != null) return
+        val p = Packs.vosk(lang.code)
+        if (!Packs.ready(this, p)) {
+            engineState = "nomodel"
+            if (Downloads.running(p)) overlay?.setWarning("Đang tải mô hình nghe ${lang.name}…")
+            else overlay?.setWarning("Chưa có mô hình nghe ${lang.name} trên máy (~${p.mb} MB).", "Tải") {
+                Downloads.start(this, p)
+                overlay?.setWarning("Đang tải mô hình nghe ${lang.name}…")
+            }
+            return
+        }
+        overlay?.setWarning(null)
+        warned = false
+        engineState = "loading"
+        engine = Engine(source, lang).also { it.start() }
+        prepareRefiner(lang.code)
+    }
+
+    /** Nạp mô hình nghe chính xác cho ngôn ngữ đang nghe (nếu đã tải); làm trên luồng nền vì nạp mất vài giây. */
+    private fun prepareRefiner(code: String) {
+        val p = Packs.accurate(code)
+        if (!prefs.accurate || p == null || !Packs.ready(this, p)) {
+            // ngôn ngữ này chưa có mô hình chính xác: trả lại bộ nhớ của mô hình cũ (~250 MB)
+            if (refiner != null && refiner?.lang != code) {
+                try { work.execute { refiner?.release(); refiner = null } } catch (e: Exception) { }
+            }
+            return
+        }
+        if (refiner?.lang == code) return
+        refinerLoading = code
+        try {
+            work.execute {
+                try {
+                    if (refiner?.lang != code) {
+                        refiner?.release()
+                        refiner = null
+                        refiner = Refiner.create(this, code)
+                    }
+                } catch (e: Throwable) {
+                    refiner = null
+                    ui.post { overlay?.setWarning("Không nạp được mô hình nghe chính xác: ${e.message}") }
+                } finally {
+                    if (refinerLoading == code) refinerLoading = null
+                }
+            }
+        } catch (e: Exception) { }
+    }
+
+    private val onDownloads: () -> Unit = {
+        if (running) {
+            if (engine != null) prepareRefiner(lang.code)
+            if (engine == null && engineState == "nomodel" && Packs.ready(this, Packs.vosk(lang.code))) startEngineIfReady()
+            else if (engine == null && engineState == "nomodel") {
+                val p = Packs.vosk(lang.code)
+                val s = Downloads.state(p)
+                if (s != null && s.finished && s.error != null) {
+                    overlay?.setWarning("Tải mô hình ${lang.name} không được: ${s.error}", "Thử lại") { Downloads.start(this, p) }
+                }
+            }
+            refreshStatus()
+        }
+    }
+
     /* ---------------------------------------------------------------- trạng thái */
+
+    private var tick = 0
 
     private val ticker = object : Runnable {
         override fun run() {
             if (!running) return
+            // chưa thấy YouTube: 3 giây hỏi lại danh sách phiên phát một lần (phòng khi bỏ lỡ sự kiện)
+            val c = clock
+            if (c != null && clockOk && !c.connected && ++tick % 6 == 0) c.refresh()
+            checkTitle()
             refreshStatus()
             checkSilence()
             ui.postDelayed(this, 500)
         }
     }
 
+    /** Video mới (tên khác): nếu đang "Tự động" thì đoán lại ngôn ngữ. */
+    private fun checkTitle() {
+        val t = clock?.title ?: return
+        if (t == lastTitle) return
+        lastTitle = t
+        if (!autoLang) return
+        val g = Langs.guess(t) ?: return
+        if (g != lang.code) switchLang(g)
+    }
+
     private fun refreshStatus() {
         val o = overlay ?: return
         val c = clock
-        if (c != null && clockOk && !c.connected) c.refresh()
         val parts = ArrayList<String>()
-        parts += when (engineState) {
-            "listening" -> if (source == Source.APP) "Nghe tiếng YouTube" else "Nghe qua micro"
-            "error" -> "Lỗi"
-            else -> "Đang nạp mô hình ${lang.name}…"
-        }
         when {
-            c != null && c.connected -> parts += fmtTime(c.positionMs()) + if (c.isPlaying) "" else " · đang dừng"
-            !clockOk -> parts += "chưa có quyền đọc vị trí video"
+            c != null && c.connected -> parts += fmtTime(c.positionMs()) + if (c.isPlaying) "" else " (dừng)"
+            !clockOk -> parts += "chưa đọc được vị trí video"
             else -> parts += "chưa thấy YouTube phát"
         }
+        parts += when (engineState) {
+            "listening" -> if (source == Source.APP) "nghe YouTube" else "nghe micro"
+            "error" -> "lỗi"
+            "nomodel" -> "chưa có mô hình"
+            else -> "đang nạp mô hình…"
+        }
+        if (refiner?.lang == lang.code) parts += "chính xác"
         o.setStatus(parts.joinToString(" · "))
         o.setPlaying(c?.isPlaying == true)
         val now = SystemClock.elapsedRealtime()
@@ -203,6 +342,18 @@ class CaptionService : Service(), OverlayHost {
                 else -> 1
             }
         )
+        // dòng thông tin: tiến độ tải > trạng thái dịch > mẹo tải mô hình chính xác
+        val dl = Packs.ALL.firstNotNullOfOrNull { if (Downloads.running(it)) Downloads.describe(it) else null }
+        val acc = Packs.accurate(lang.code)
+        val info = when {
+            dl != null -> dl
+            refinerLoading != null -> "Đang nạp mô hình nghe chính xác…"
+            prefs.translate && Translator.status != null -> Translator.status
+            engineState == "listening" && prefs.accurate && acc != null && !Packs.ready(this, acc) && now - listenSince < 15000 ->
+                "Mẹo: tải “Nghe chính xác” (${acc.mb} MB) trong app subZoro để câu đúng hơn, có dấu câu."
+            else -> null
+        }
+        o.setInfo(info)
     }
 
     /** Bắt tiếng YouTube mà toàn im lặng khi video đang chạy: có thể YouTube không cho app khác bắt tiếng. */
@@ -213,7 +364,7 @@ class CaptionService : Service(), OverlayHost {
         if (heard && prefs.appCapture != "ok") prefs.appCapture = "ok"
         if (warned && now - lastLoudAt < 1500) {
             warned = false
-            overlay?.setWarning(null, null)
+            overlay?.setWarning(null)
             return
         }
         if (warned) return
@@ -223,11 +374,23 @@ class CaptionService : Service(), OverlayHost {
             warned = true
             if (!heard) {
                 prefs.appCapture = "silent"
-                overlay?.setWarning("Không nghe thấy tiếng nào từ YouTube. Có thể YouTube không cho app khác bắt tiếng (hoặc video đang tắt tiếng).", "Dùng micro")
+                overlay?.setWarning("Không nghe thấy tiếng nào từ YouTube. Có thể YouTube không cho app khác bắt tiếng (hoặc video đang tắt tiếng).", "Dùng micro") { useMic() }
             } else {
-                overlay?.setWarning("Một lúc rồi không nghe thấy tiếng từ video.", null)
+                overlay?.setWarning("Một lúc rồi không nghe thấy tiếng từ video.")
             }
         }
+    }
+
+    private fun useMic() {
+        overlay?.setWarning(null)
+        warned = false
+        val old = engine
+        engine = null
+        engineState = "loading"
+        Thread {
+            old?.halt()
+            ui.post { if (running) { source = Source.MIC; startEngineIfReady() } }
+        }.start()
     }
 
     /* ---------------------------------------------------------------- nút trên bong bóng */
@@ -255,42 +418,78 @@ class CaptionService : Service(), OverlayHost {
         stopSelf()
     }
 
-    override fun onWarnAction() {
-        overlay?.setWarning(null, null)
-        warned = false
-        val old = engine
-        engine = null
-        engineState = "loading"
-        Thread {
-            old?.halt()
-            ui.post { if (running) { source = Source.MIC; startEngine(Source.MIC) } }
-        }.start()
-    }
-
     private fun needClock() {
         toast(if (!clockOk) "Cần bật “Truy cập thông báo” cho subZoro (trong app subZoro) để tua video." else "Chưa thấy YouTube đang phát.")
     }
 
     /* ---------------------------------------------------------------- câu */
 
-    private fun addLine(l: Line) {
+    private fun redraw() {
+        overlay?.setLines(lines, partialText)
+    }
+
+    private fun addLine(l: Line, audio: FloatArray?) {
         lines.add(l)
         if (lines.size > 300) lines.subList(0, 100).clear()
         partialText = ""
-        overlay?.setLines(lines, partialText)
-        if (prefs.translate) {
-            val sl = lang.gtx
-            try {
-                tr.execute {
-                    val vi = Translator.translate(l.text, sl)
-                    if (vi != null && !vi.equals(l.text, ignoreCase = true)) {
-                        l.vi = vi
-                        ui.post { overlay?.setLines(lines, partialText) }
-                    }
+        redraw()
+        try {
+            work.execute {
+                // 1) nghe lại bằng mô hình chính xác
+                val r = refiner
+                if (r != null && r.lang == l.lang && audio != null && audio.size > RATE / 4) {
+                    try {
+                        val better = tidy(r.recognize(audio), l.lang)
+                        if (better.isNotEmpty()) {
+                            l.text = better
+                            l.refined = true
+                        }
+                    } catch (e: Throwable) { }
                 }
-            } catch (e: Exception) { }
-        }
+                // 2) bính âm cho tiếng Trung
+                if (l.lang == "zh") {
+                    try { l.pinyin = Pinyin.of(this, l.text) } catch (e: Throwable) { }
+                }
+                ui.post { redraw() }
+                // 3) dịch
+                if (prefs.translate) {
+                    try {
+                        tr.execute {
+                            val vi = Translator.translate(l.text, Langs.of(l.lang))
+                            if (vi != null && !vi.equals(l.text, ignoreCase = true)) {
+                                l.vi = vi
+                                ui.post { redraw() }
+                            }
+                        }
+                    } catch (e: Exception) { }
+                }
+            }
+        } catch (e: Exception) { }
     }
+
+    /** Chuẩn hoá chữ từ mô hình chính xác: tiếng Trung bỏ dấu cách thừa, tiếng Nga/Anh viết hoa đầu câu. */
+    private fun tidy(raw: String, code: String): String {
+        val t = raw.trim()
+        if (t.isEmpty()) return ""
+        if (code == "zh") {
+            // bỏ dấu cách nằm cạnh chữ Hán / dấu câu Trung (giữ dấu cách giữa hai từ Latinh)
+            val sb = StringBuilder()
+            for (i in t.indices) {
+                val c = t[i]
+                if (c == ' ') {
+                    val prev = if (i > 0) t[i - 1] else ' '
+                    val next = if (i + 1 < t.length) t[i + 1] else ' '
+                    if (isCjk(prev) || isCjk(next)) continue
+                }
+                sb.append(c)
+            }
+            return sb.toString()
+        }
+        val low = if (t.length > 3 && t == t.uppercase()) t.lowercase() else t
+        return low.replaceFirstChar { it.uppercase() }.replace(Regex("\\bi\\b"), "I")
+    }
+
+    private fun isCjk(c: Char) = Character.UnicodeScript.of(c.code) == Character.UnicodeScript.HAN || c in "，。？！、：；“”（）"
 
     private fun setPartial(p: String) {
         partialText = p
@@ -299,17 +498,15 @@ class CaptionService : Service(), OverlayHost {
 
     /* ---------------------------------------------------------------- nghe + nhận dạng */
 
-    private fun startEngine(s: Source) {
-        engineState = "loading"
-        warned = false
-        engine = Engine(s, lang).also { it.start() }
-    }
-
     private class Anchor(val sample: Long, val videoMs: Long, val playing: Boolean, val speed: Float)
 
     private inner class Engine(private val src: Source, private val lang: Lang) : Thread("subzoro-nghe") {
         @Volatile private var stopFlag = false
         private val anchors = ArrayList<Anchor>()
+        /** 45 giây tiếng gần nhất, để nghe lại từng câu bằng mô hình chính xác */
+        private val ring = ShortArray(RATE * 45)
+        @Volatile private var total = 0L
+        private var lastFinalEnd = 0L
 
         fun halt() {
             stopFlag = true
@@ -321,7 +518,7 @@ class CaptionService : Service(), OverlayHost {
             var model: Model? = null
             var recog: Recognizer? = null
             try {
-                model = Model(Models.dir(this@CaptionService, lang).absolutePath)
+                model = Model(Packs.dir(this@CaptionService, Packs.vosk(lang.code)).absolutePath)
                 recog = Recognizer(model, RATE.toFloat())
                 recog.setWords(true)
                 rec = buildRecorder()
@@ -329,9 +526,8 @@ class CaptionService : Service(), OverlayHost {
                 if (rec.recordingState != AudioRecord.RECORDSTATE_RECORDING) throw IllegalStateException("không bắt đầu ghi được (micro đang bị app khác dùng?)")
                 listenSince = SystemClock.elapsedRealtime()
                 lastLoudAt = 0L
-                engineState = "listening"
+                if (!stopFlag) engineState = "listening"
                 val buf = ShortArray(RATE / 10)
-                var total = 0L
                 var lastPartial = ""
                 while (!stopFlag) {
                     val n = rec.read(buf, 0, buf.size)
@@ -341,6 +537,7 @@ class CaptionService : Service(), OverlayHost {
                     for (i in 0 until n) { val v = buf[i] / 32768.0; sum += v * v }
                     if (sqrt(sum / n) > LOUD) lastLoudAt = SystemClock.elapsedRealtime()
                     addAnchor(total, n)
+                    for (i in 0 until n) ring[((total + i) % ring.size).toInt()] = buf[i]
                     total += n
                     if (recog.acceptWaveForm(buf, n)) {
                         handleFinal(recog.result)
@@ -349,16 +546,21 @@ class CaptionService : Service(), OverlayHost {
                         val p = cleanup(JSONObject(recog.partialResult).optString("partial"))
                         if (p != lastPartial) {
                             lastPartial = p
-                            ui.post { setPartial(p) }
+                            ui.post { if (engine === this) setPartial(p) }
                         }
                     }
                 }
-                handleFinal(recog.finalResult)
             } catch (e: Throwable) {
                 if (!stopFlag) {
                     engineState = "error"
                     val msg = e.message ?: e.toString()
-                    ui.post { overlay?.setWarning("Lỗi khi nghe: $msg", null) }
+                    val me = this
+                    ui.post {
+                        if (engine === me) {
+                            engine = null
+                            overlay?.setWarning("Lỗi khi nghe: $msg", "Thử lại") { startEngineIfReady() }
+                        }
+                    }
                 }
             } finally {
                 try { rec?.stop() } catch (e: Exception) { }
@@ -421,6 +623,14 @@ class CaptionService : Service(), OverlayHost {
             }
         }
 
+        /** Lấy lại đoạn tiếng [from, to) (số mẫu tính từ lúc bắt đầu nghe) để nghe lại bằng mô hình chính xác. */
+        private fun slice(from: Long, to: Long): FloatArray? {
+            val a = maxOf(from, total - ring.size, 0L)
+            val b = minOf(to, total)
+            if (b - a < RATE / 4) return null
+            return FloatArray((b - a).toInt()) { ring[((a + it) % ring.size).toInt()] / 32768f }
+        }
+
         private fun cleanup(raw: String): String {
             val t = raw.trim()
             if (t.isEmpty()) return ""
@@ -430,21 +640,29 @@ class CaptionService : Service(), OverlayHost {
         private fun handleFinal(json: String) {
             val o = try { JSONObject(json) } catch (e: Exception) { return }
             val text = cleanup(o.optString("text"))
-            if (text.isEmpty()) return
+            val now = total
+            if (text.isEmpty()) { lastFinalEnd = now; return }
             val words = o.optJSONArray("result")
             // một từ lẻ mà máy không chắc: thường là tiếng nhạc/tiếng ồn
             if (words != null && words.length() == 1 && words.getJSONObject(0).optDouble("conf", 1.0) < 0.8) {
-                ui.post { setPartial("") }
+                lastFinalEnd = now
+                ui.post { if (engine === this) setPartial("") }
                 return
             }
             var start = -1L
             var end = -1L
+            var from = lastFinalEnd
+            var to = now
             if (words != null && words.length() > 0) {
-                start = videoAt((words.getJSONObject(0).optDouble("start", -1.0) * RATE).toLong())
-                end = videoAt((words.getJSONObject(words.length() - 1).optDouble("end", -1.0) * RATE).toLong())
+                val s0 = words.getJSONObject(0).optDouble("start", -1.0)
+                val s1 = words.getJSONObject(words.length() - 1).optDouble("end", -1.0)
+                if (s0 >= 0) { start = videoAt((s0 * RATE).toLong()); from = (s0 * RATE).toLong() - RATE * 3 / 10 }
+                if (s1 >= 0) { end = videoAt((s1 * RATE).toLong()); to = (s1 * RATE).toLong() + RATE * 35 / 100 }
             }
-            val line = Line(text, start, end)
-            ui.post { addLine(line) }
+            lastFinalEnd = now
+            val audio = slice(from, to)
+            val line = Line(text, start, end, lang.code)
+            ui.post { if (running) addLine(line, audio) }
         }
     }
 
