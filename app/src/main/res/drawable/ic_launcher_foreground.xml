@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ba nhát chém pastel (giống biểu tượng extension), nằm trong vùng an toàn 66dp ở giữa -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M36,70 L60,36"
+        android:strokeColor="#EAF6E7"
+        android:strokeWidth="6.5"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M45,74 L69,40"
+        android:strokeColor="#BFE3B8"
+        android:strokeWidth="6.5"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M54,78 L76,47"
+        android:strokeColor="#8FCB86"
+        android:strokeWidth="6.5"
+        android:strokeLineCap="round" />
+</vector>

@@ -1,0 +1,44 @@
+# Mỗi lần đẩy code lên GitHub: dựng APK và đăng vào mục Releases để tải thẳng về điện thoại.
+name: Dựng APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Dựng APK
+        run: bash ./gradlew :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Đặt tên file
+        run: cp app/build/outputs/apk/debug/app-debug.apk "subZoro-0.1.${{ github.run_number }}.apk"
+
+      - name: Lưu APK (Artifacts)
+        uses: actions/upload-artifact@v4
+        with:
+          name: subZoro-0.1.${{ github.run_number }}
+          path: subZoro-0.1.${{ github.run_number }}.apk
+
+      - name: Đăng vào Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.1.${{ github.run_number }}
+          name: subZoro Android 0.1.${{ github.run_number }}
+          files: subZoro-0.1.${{ github.run_number }}.apk
+          body: |
+            Bản thử bong bóng phụ đề trên YouTube (dựng tự động từ commit ${{ github.sha }}).
+            Tải file .apk bên dưới về điện thoại rồi mở để cài. Bản mới cài đè lên bản cũ được, không mất cài đặt.
