@@ -210,7 +210,7 @@ class MainActivity : Activity() {
         models.addView(text("Đổi ngôn ngữ ngay trên bong bóng bằng nút EN / RU / 中文. Mỗi thứ tiếng cần tải mô hình của nó một lần.", 13f, Pal.MUTED))
         models.addView(check("Tự đoán ngôn ngữ theo tên video", prefs.autoLang) { prefs.autoLang = it })
         models.gap(4)
-        models.addView(text("Ngôn ngữ khi không đoán được:", 13.5f, Pal.TEXT))
+        models.addView(text("Ngôn ngữ mặc định (dùng khi không đoán được, hoặc khi tắt tự đoán):", 13.5f, Pal.TEXT))
         val group = RadioGroup(this).apply { orientation = LinearLayout.HORIZONTAL }
         for (l in Langs.ALL) {
             group.addView(RadioButton(this).apply {

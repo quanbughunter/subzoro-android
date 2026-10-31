@@ -101,6 +101,14 @@ class VideoClock(private val ctx: Context, private val onChange: () -> Unit) {
 
     val title: String? get() = controller?.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE)
 
+    /** Khoá phân biệt video đang phát: tên + độ dài (giây). Độ dài 0 = chưa biết / phát trực tiếp. */
+    val videoKey: String?
+        get() {
+            val m = controller?.metadata ?: return null
+            val t = m.getString(MediaMetadata.METADATA_KEY_TITLE) ?: return null
+            return t + "|" + maxOf(0L, m.getLong(MediaMetadata.METADATA_KEY_DURATION) / 1000)
+        }
+
     /** Vị trí hiện tại trong video (ms), -1 nếu không biết. */
     fun positionMs(): Long {
         val s = controller?.playbackState ?: return -1

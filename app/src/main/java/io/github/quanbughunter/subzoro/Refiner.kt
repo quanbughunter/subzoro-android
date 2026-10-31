@@ -52,13 +52,22 @@ class Refiner private constructor(private val rec: OfflineRecognizer, val lang: 
         }
     }
 
+    /** Kết quả nghe lại: chữ + từng token và giây bắt đầu của token (tính từ đầu đoạn tiếng). */
+    class Result(val text: String, val tokens: Array<String>, val times: FloatArray)
+
     /** samples: tiếng 16 kHz, giá trị -1..1. */
-    fun recognize(samples: FloatArray): String {
+    fun recognize(samples: FloatArray): Result {
         val s = rec.createStream()
         try {
             s.acceptWaveform(samples, 16000)
             rec.decode(s)
-            return rec.getResult(s).text.trim()
+            val r = rec.getResult(s)
+            // phòng thư viện trả mảng rỗng/null cho mốc giờ: khi đó chỉ dùng chữ
+            @Suppress("USELESS_CAST")
+            val tokens: Array<String> = (r.tokens as Array<String>?) ?: emptyArray()
+            @Suppress("USELESS_CAST")
+            val times: FloatArray = (r.timestamps as FloatArray?) ?: FloatArray(0)
+            return Result(r.text.trim(), tokens, times)
         } finally {
             s.release()
         }

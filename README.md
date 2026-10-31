@@ -3,9 +3,10 @@
 Bong bóng phụ đề nổi trên app YouTube: nghe tiếng video, nhận dạng ngay trên máy, hiện câu kèm bính âm (tiếng Trung) và nghĩa tiếng Việt.
 Anh em với extension subZoro trên Chrome (`youtube-subber`).
 
-## Làm được gì (0.1.3)
-- Bong bóng nổi trên YouTube: 3 câu gần nhất + câu đang nghe dở; tiếng Trung có **bính âm** phía trên và **nghĩa tiếng Việt** nhỏ phía dưới.
-- **Đổi ngôn ngữ ngay trên bong bóng** (nút EN / RU / 中文), hoặc **tự đoán theo tên video** (chữ Hán → Trung, chữ Nga → Nga, còn lại → Anh). Thiếu mô hình thì tải ngay trên bong bóng.
+## Làm được gì
+- Bong bóng nổi trên YouTube: **mọi câu đã nghe của video**, xếp theo thời gian trong video, cuộn được (vuốt, hoặc kéo thanh trượt bên phải); kéo vạch dưới đáy để đổi chiều cao. Tiếng Trung có **bính âm** phía trên và **nghĩa tiếng Việt** nhỏ phía dưới.
+- **Không lặp câu khi tua lại**: chạm vào câu cũ hoặc tua về đoạn đã nghe thì không nghe lại thành câu mới; câu đang phát được **tô sáng theo từng lời** (bính âm sáng theo chữ Hán, nghĩa tiếng Việt đậm lên). Tua tới đoạn chưa nghe thì câu mới được chèn đúng chỗ. Mỗi video giữ danh sách câu riêng (6 video gần nhất).
+- **Đổi ngôn ngữ ngay trên bong bóng** (nút EN / RU / 中文), hoặc **tự đoán theo tên video** (chữ Hán → Trung, chữ Nga → Nga; tên ghi "tiếng Trung/Nga/Anh", HSK, IELTS… thì theo đó; tên tiếng Việt không ghi rõ thì dùng ngôn ngữ mặc định; còn lại → Anh). Thiếu mô hình thì tải ngay trên bong bóng.
 - Nghe **tiếng phát ra từ YouTube** (Android 10+, đồng ý chia sẻ màn hình mỗi lần bật — chỉ lấy tiếng) hoặc **micro**.
 - **Nghe hai lượt**: Vosk small cho chữ hiện ngay theo từng từ; xong mỗi câu, đoạn tiếng đó được nghe lại bằng mô hình chính xác (tuỳ chọn tải):
   SenseVoice (Trung + Anh, có dấu câu) hoặc GigaAM v2 (Nga), chạy bằng sherpa-onnx ngay trên máy.
@@ -20,8 +21,9 @@ APK được ký bằng `app/subzoro-debug.keystore` (khoá thử, mật khẩu 
 
 ## Cấu trúc
 - `MainActivity.kt` — màn hình cài đặt: quyền, tải/xoá mô hình, nguồn tiếng, dịch, bật/tắt.
-- `CaptionService.kt` — dịch vụ nền: bắt tiếng → Vosk → câu + mốc thời gian video → nghe lại bằng mô hình chính xác → bính âm → dịch; đổi ngôn ngữ.
-- `Overlay.kt` — bong bóng nổi (chọn ngôn ngữ, kéo, thu nhỏ, cỡ chữ).
+- `CaptionService.kt` — dịch vụ nền: bắt tiếng → Vosk → lọc phần đã có → câu + mốc thời gian video → nghe lại bằng mô hình chính xác → bính âm → dịch; đổi ngôn ngữ, danh sách câu theo từng video.
+- `Timing.kt` — mốc từng từ (từ Vosk hoặc token của mô hình chính xác), những đoạn đã có câu, chia nhóm từ mới.
+- `Overlay.kt` — bong bóng nổi (danh sách cuộn + thanh trượt, tô câu đang phát theo từng lời, chọn ngôn ngữ, kéo, thu nhỏ, cỡ chữ).
 - `VideoClock.kt` — đọc/điều khiển phiên phát của app YouTube (MediaSession).
 - `Models.kt` — các gói mô hình (Vosk .zip, sherpa-onnx .tar.bz2), tải có tải tiếp, giải nén.
 - `Refiner.kt` — nghe lại từng câu bằng SenseVoice / GigaAM (sherpa-onnx).

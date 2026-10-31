@@ -33,12 +33,20 @@ object Pinyin {
     private val PUNCT = mapOf('，' to ",", '。' to ".", '？' to "?", '！' to "!", '、' to ",", '：' to ":", '；' to ";", '“' to "\"", '”' to "\"", '（' to "(", '）' to ")")
 
     /** "今天想和大家来聊。" -> "jīn tiān xiǎng hé dà jiā lái liáo." */
-    fun of(ctx: Context, text: String): String {
-        val m = load(ctx)
+    fun of(ctx: Context, text: String): String = mapped(ctx, text).text
+
+    /** Như of(), kèm vị trí bính âm của từng chữ (để tô bính âm cùng lúc với chữ Hán). */
+    fun mapped(ctx: Context, text: String): PinyinText = mapped(load(ctx), text)
+
+    fun mapped(m: Map<String, String>, text: String): PinyinText {
         val out = StringBuilder()
-        fun add(s: String) {
+        val st = IntArray(text.length)
+        val en = IntArray(text.length)
+        fun add(s: String): Int {
             if (out.isNotEmpty() && out.last() != ' ') out.append(' ')
+            val a = out.length
             out.append(s)
+            return a
         }
         var i = 0
         while (i < text.length) {
@@ -50,23 +58,40 @@ object Pinyin {
                     if (i + len > text.length) continue
                     val w = text.substring(i, i + len)
                     if (!w.all { isHan(it) }) continue
-                    val py = m[w]
-                    if (py != null) { add(py); i += len; hit = true; break }
+                    val py = m[w] ?: continue
+                    val a = add(py)
+                    val syl = py.split(' ')
+                    if (syl.size == len) {
+                        var p = a
+                        for (k in 0 until len) { st[i + k] = p; en[i + k] = p + syl[k].length; p += syl[k].length + 1 }
+                    } else {
+                        for (k in 0 until len) { st[i + k] = a; en[i + k] = out.length }
+                    }
+                    i += len
+                    hit = true
+                    break
                 }
                 if (!hit) {
-                    add(m[c.toString()] ?: c.toString())
+                    val a = add(m[c.toString()] ?: c.toString())
+                    st[i] = a
+                    en[i] = out.length
                     i++
                 }
             } else {
                 val p = PUNCT[c]
                 when {
-                    p != null -> out.append(p)
-                    c.isWhitespace() -> if (out.isNotEmpty() && out.last() != ' ') out.append(' ')
+                    p != null -> { st[i] = out.length; out.append(p); en[i] = out.length }
+                    c.isWhitespace() -> {
+                        if (out.isNotEmpty() && out.last() != ' ') out.append(' ')
+                        st[i] = out.length
+                        en[i] = out.length
+                    }
                     else -> {
                         // chữ số, chữ Latinh: giữ nguyên cả cụm
                         var j = i
                         while (j < text.length && !isHan(text[j]) && PUNCT[text[j]] == null && !text[j].isWhitespace()) j++
-                        add(text.substring(i, j))
+                        val a = add(text.substring(i, j))
+                        for (k in i until j) { st[k] = a + (k - i); en[k] = a + (k - i) + 1 }
                         i = j
                         continue
                     }
@@ -74,6 +99,8 @@ object Pinyin {
                 i++
             }
         }
-        return out.toString().trim()
+        val s = out.toString().trimEnd()
+        for (k in st.indices) { st[k] = minOf(st[k], s.length); en[k] = minOf(en[k], s.length) }
+        return PinyinText(text, s, st, en)
     }
 }
