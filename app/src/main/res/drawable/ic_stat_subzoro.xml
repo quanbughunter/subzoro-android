@@ -1,12 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- ba vết chém (trắng) cho thanh thông báo -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
-    android:viewportWidth="24"
-    android:viewportHeight="24">
-    <path
-        android:pathData="M4,17 L11,6 M8.5,19 L15.5,8 M13,21 L20,10"
-        android:strokeColor="#FFFFFFFF"
-        android:strokeWidth="2.2"
-        android:strokeLineCap="round" />
+    android:viewportWidth="56"
+    android:viewportHeight="56">
+    <group
+        android:translateX="-26"
+        android:translateY="-26">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M31.21,66.88 C41.12,53.55 48.86,37.77 55.59,27.87 C43.67,34.53 33.49,48.78 31.21,66.88Z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M38.90,78.17 C50.91,61.48 60.86,42.15 69.10,29.83 C55.67,38.91 43.28,56.71 38.90,78.17Z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M52.41,80.13 C62.32,66.80 70.06,51.02 76.79,41.12 C64.87,47.77 54.69,62.03 52.41,80.13Z" />
+    </group>
 </vector>

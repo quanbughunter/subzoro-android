@@ -874,28 +874,58 @@ class Overlay(private val ctx: Context, private val host: OverlayHost) {
         }
     }
 
-    /** Nút tròn khi thu nhỏ: ba nhát chém pastel trên nền xanh rêu. */
+    /** Nút tròn khi thu nhỏ: ba vết kiếm chém (đỏ nâu, trắng, tím) trên nền xanh, giống biểu tượng app. */
     private class BubbleView(c: Context) : View(c) {
-        private val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Pal.ACCENT }
-        private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeCap = Paint.Cap.ROUND
+        private companion object {
+            /** mỗi vết chém: điểm đầu, 2 điểm điều khiển, điểm cuối (mép ngoài), 2 điểm điều khiển (mép trong) — toạ độ khung 108 của biểu tượng */
+            val SLASHES = floatArrayOf(
+                31.21f, 66.88f, 41.12f, 53.55f, 48.86f, 37.77f, 55.59f, 27.87f, 43.67f, 34.53f, 33.49f, 48.78f,
+                38.9f, 78.17f, 50.91f, 61.48f, 60.86f, 42.15f, 69.1f, 29.83f, 55.67f, 38.91f, 43.28f, 56.71f,
+                52.41f, 80.13f, 62.32f, 66.8f, 70.06f, 51.02f, 76.79f, 41.12f, 64.87f, 47.77f, 54.69f, 62.03f
+            )
+            val COLORS = intArrayOf(0xFFAE4A3E.toInt(), 0xFFFFFFFF.toInt(), 0xFF7259AD.toInt())
+            const val LAUNCHER_BG = 0xFF4E9160.toInt()
         }
-        private val colors = intArrayOf(0xFFEAF6E7.toInt(), 0xFFBFE3B8.toInt(), 0xFF8FCB86.toInt())
+
+        private val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = LAUNCHER_BG }
+        private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+        private val shadow = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = 0x38000000 }
+        private val paths = Array(3) { android.graphics.Path() }
+        private var builtFor = -1f
 
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
             val s = context.dp(52)
             setMeasuredDimension(s, s)
         }
 
+        /** Khung 108 → nút tròn: lấy phần giữa 72×72 (vùng hiện của biểu tượng) cho vừa nút. */
+        private fun build(s: Float) {
+            val k = s / 72f
+            fun x(v: Float) = (v - 18f) * k
+            for (i in 0..2) {
+                val o = i * 12
+                val v = SLASHES
+                paths[i].reset()
+                paths[i].moveTo(x(v[o]), x(v[o + 1]))
+                paths[i].cubicTo(x(v[o + 2]), x(v[o + 3]), x(v[o + 4]), x(v[o + 5]), x(v[o + 6]), x(v[o + 7]))
+                paths[i].cubicTo(x(v[o + 8]), x(v[o + 9]), x(v[o + 10]), x(v[o + 11]), x(v[o]), x(v[o + 1]))
+                paths[i].close()
+            }
+            builtFor = s
+        }
+
         override fun onDraw(canvas: Canvas) {
             val s = width.toFloat()
+            if (s != builtFor) build(s)
             canvas.drawCircle(s / 2, s / 2, s / 2, bg)
-            stroke.strokeWidth = s * 0.075f
+            val off = s / 72f
+            canvas.save()
+            canvas.translate(0.9f * off, 1.3f * off)
+            for (p in paths) canvas.drawPath(p, shadow)
+            canvas.restore()
             for (i in 0..2) {
-                stroke.color = colors[i]
-                val o = (i - 1) * s * 0.15f
-                canvas.drawLine(s * 0.36f + o, s * 0.70f, s * 0.58f + o, s * 0.30f, stroke)
+                fill.color = COLORS[i]
+                canvas.drawPath(paths[i], fill)
             }
         }
     }

@@ -1,23 +1,37 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- ba nhát chém pastel (giống biểu tượng extension), nằm trong vùng an toàn 66dp ở giữa -->
+<!-- ba vết kiếm chém hình lưỡi trăng (Kitetsu đỏ nâu, Wado trắng, Enma tím), nằm trong vùng an toàn 66dp ở giữa -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- bóng mờ dưới mỗi vết chém cho nổi khỏi nền -->
+    <group
+        android:translateX="0.9"
+        android:translateY="1.3">
+        <path
+            android:fillColor="#000000"
+            android:fillAlpha="0.22"
+            android:pathData="M31.21,66.88 C41.12,53.55 48.86,37.77 55.59,27.87 C43.67,34.53 33.49,48.78 31.21,66.88Z" />
+        <path
+            android:fillColor="#000000"
+            android:fillAlpha="0.22"
+            android:pathData="M38.90,78.17 C50.91,61.48 60.86,42.15 69.10,29.83 C55.67,38.91 43.28,56.71 38.90,78.17Z" />
+        <path
+            android:fillColor="#000000"
+            android:fillAlpha="0.22"
+            android:pathData="M52.41,80.13 C62.32,66.80 70.06,51.02 76.79,41.12 C64.87,47.77 54.69,62.03 52.41,80.13Z" />
+    </group>
+    <!-- Kitetsu — đỏ nâu -->
     <path
-        android:pathData="M36,70 L60,36"
-        android:strokeColor="#EAF6E7"
-        android:strokeWidth="6.5"
-        android:strokeLineCap="round" />
+        android:fillColor="#AE4A3E"
+        android:pathData="M31.21,66.88 C41.12,53.55 48.86,37.77 55.59,27.87 C43.67,34.53 33.49,48.78 31.21,66.88Z" />
+    <!-- Wado — trắng -->
     <path
-        android:pathData="M45,74 L69,40"
-        android:strokeColor="#BFE3B8"
-        android:strokeWidth="6.5"
-        android:strokeLineCap="round" />
+        android:fillColor="#FFFFFF"
+        android:pathData="M38.90,78.17 C50.91,61.48 60.86,42.15 69.10,29.83 C55.67,38.91 43.28,56.71 38.90,78.17Z" />
+    <!-- Enma — tím -->
     <path
-        android:pathData="M54,78 L76,47"
-        android:strokeColor="#8FCB86"
-        android:strokeWidth="6.5"
-        android:strokeLineCap="round" />
+        android:fillColor="#7259AD"
+        android:pathData="M52.41,80.13 C62.32,66.80 70.06,51.02 76.79,41.12 C64.87,47.77 54.69,62.03 52.41,80.13Z" />
 </vector>
